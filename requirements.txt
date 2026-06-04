@@ -1,0 +1,52 @@
+# ============================================================================
+# MSAmba / MSAmba_ALMT — môi trường huấn luyện (stack HIỆN ĐẠI: Python 3.12, torch 2.4, CUDA 12)
+# ----------------------------------------------------------------------------
+# File này CHỈ chứa gói PyPI thuần. torch + mamba-ssm + causal-conv1d cài RIÊNG
+# (xem lệnh bên dưới) — KHÔNG để chung vì:
+#   (1) --extra-index-url của PyTorch khiến uv/pip cố resolve MỌI gói từ index đó
+#       (gây lỗi kiểu "no version of tqdm==4.66.1") — tránh bằng cách cài torch riêng.
+#   (2) mamba-ssm/causal-conv1d là wheel CUDA dựng sẵn, cài thẳng từ URL.
+#
+# ---- CÀI ĐẶT (dùng uv, Python 3.12 hệ thống — KHÔNG cần nvcc) ----
+#
+#   uv venv --python 3.10 && source .venv/bin/activate
+#   # (QUAN TRỌNG: tag cpXY của wheel phải khớp Python của venv. Kiểm tra: python --version)
+#   # Dưới đây dùng cp310. Nếu venv là 3.12 thì đổi mọi 'cp310' -> 'cp312'.
+#
+#   # 1) torch 2.4.0 + torchvision 0.19.0 (CUDA 12.1) — cài CÙNG NHAU với index của PyTorch
+#   #    (timm import torchvision; version torch/torchvision PHẢI khớp, nếu không -> lỗi
+#   #     "operator torchvision::nms does not exist"):
+#   uv pip install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
+#
+#   # 2) các gói PyPI (file này):
+#   uv pip install -r requirements.txt
+#
+#   # 3) mamba-ssm + causal-conv1d (wheel dựng sẵn cp310 / cu12 / torch2.4 — không build, không cần nvcc):
+#   #    DÙNG --no-deps: các wheel này khai báo `torch` KHÔNG pin -> nếu không có --no-deps,
+#   #    uv/pip sẽ kéo torch mới nhất (vd 2.12+cu130) làm LỆCH ABI với wheel (import lỗi undefined symbol).
+#   uv pip install --no-deps "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0%2Bcu122torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+#   uv pip install --no-deps "https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4%2Bcu12torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+#   # Kiểm tra torch vẫn đúng sau bước 3:  python -c "import torch;print(torch.__version__)"  # phải là 2.4.0+cu121
+#
+# ---- VỀ "CUDA 13.2" trên máy ----
+#   13.2 là khả năng của DRIVER. Wheel torch/mamba mang sẵn CUDA RUNTIME riêng (cu121/cu122);
+#   driver mới chạy ngược được runtime cũ hơn, nên cu12.x hoạt động tốt trên driver 13.2.
+#   Hiện CHƯA có wheel torch/mamba build cho CUDA 13.x; cu12.x là bản mới nhất khả dụng.
+#   RTX 3080 (Ampere, sm_86) tương thích đầy đủ cu12.x.
+#
+# ---- LƯU Ý ----
+#   - KHÔNG dùng mamba-ssm 2.3.2 (bản trong ../mamba): import mamba_ssm sẽ kéo theo mamba3
+#     → cần tilelang/triton>=3.5 (nặng, dễ lỗi). MSAmba chỉ cần Mamba/Mamba2 → 2.2.4 là đủ.
+#   - VRAM 10GB/GPU: nếu OOM, giảm --batch_size (vd 32). Code dùng 1 GPU.
+#   - SIMS cần 'bert-base-chinese' + sửa đường dẫn hardcode trong models/bert.py.
+# ============================================================================
+
+numpy<2                  # bắt buộc <2 cho transformers 4.36 / timm 0.6.x
+transformers==4.36.2
+timm==0.6.13             # cần API timm.models.layers / registry / vision_transformer._cfg,_load_weights
+einops>=0.7,<0.9
+scikit-learn>=1.3
+pandas>=1.5,<2.2
+tensorboardX>=2.6
+tqdm>=4.66
+thop>=0.1.1              # đếm FLOPs (nhánh test_flops)
