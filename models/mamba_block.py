@@ -468,7 +468,7 @@ class Block_GLCE(nn.Module):
             self.mlp = nn.Linear(dim, dim)
 
         self.seq_len = seq_len
-        self.local_extractor = nn.Conv1d(self.seq_len, self.seq_len, kernel_size=3, stride=1, padding=1)
+        self.local_extractor = nn.Conv1d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim)
         self.global_extractor = nn.Linear(self.seq_len, self.seq_len)
         self.layer_norm_2 = norm_cls(dim)
         self.mixer_b = mixer_cls(dim)  # backward Mamba for bidirectional scan
@@ -503,7 +503,7 @@ class Block_GLCE(nn.Module):
             hidden_states_t = hidden_states.permute(0, 2, 1)
             # print(hidden_states_t.shape)
             hidden_states_t = self.global_extractor(hidden_states_t)
-            hidden_states = hidden_states_t.permute(0, 2, 1) + hidden_states + self.local_extractor(hidden_states)
+            hidden_states = hidden_states_t.permute(0, 2, 1) + hidden_states + self.local_extractor(hidden_states.permute(0, 2, 1)).permute(0, 2, 1)
             hidden_states = fused_add_norm_fn(
                 hidden_states,
                 self.layer_norm_2.weight,
@@ -557,7 +557,7 @@ class Block_ISM(nn.Module):
 
         # GLCE-style context extraction
         self.global_extractor = nn.Linear(seq_len, seq_len)
-        self.local_extractor  = nn.Conv1d(seq_len, seq_len, kernel_size=3, stride=1, padding=1)
+        self.local_extractor  = nn.Conv1d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim)
 
         # Pre-norm FFN (ISM-style)
         self.norm_ff = norm_cls(dim)
@@ -592,7 +592,7 @@ class Block_ISM(nn.Module):
 
         # ── 2. Global + Local context (GLCE) ──────────────────────────────────
         h_global = self.global_extractor(hidden_states.permute(0, 2, 1)).permute(0, 2, 1)
-        h_local  = self.local_extractor(hidden_states)
+        h_local  = self.local_extractor(hidden_states.permute(0, 2, 1)).permute(0, 2, 1)
         hidden_states = hidden_states + h_global + h_local
 
         # second norm before Mamba
