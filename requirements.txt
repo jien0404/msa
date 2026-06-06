@@ -50,3 +50,4 @@ pandas>=1.5,<2.2
 tensorboardX>=2.6
 tqdm>=4.66
 thop>=0.1.1              # đếm FLOPs (nhánh test_flops)
+setuptools>=68

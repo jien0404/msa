@@ -92,7 +92,7 @@ def main():
         [
             {'params': bert_params_decay, 'weight_decay': 0.01, 'lr':1e-5},
             {'params': bert_params_no_decay, 'weight_decay':0.0, 'lr': 1e-5},
-            {'params': other_params, 'weight_decay':1e-4, 'lr':1e-3},
+            {'params': other_params, 'weight_decay': 1e-4, 'lr': 5e-4},
         ]
     )
 
