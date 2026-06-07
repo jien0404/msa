@@ -519,7 +519,7 @@ class Block_GLCE(nn.Module):
         else:
             h_fwd = self.mixer(hidden_states, inference_params=inference_params)
             h_bwd = self.mixer_b(hidden_states.flip(1), inference_params=inference_params).flip(1)
-        hidden_states = h_fwd * h_bwd
+        hidden_states = h_fwd + h_bwd
         if self.use_mlp:
             hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
@@ -564,7 +564,9 @@ class Block_ISM(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(dim, dim * 4),
             nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(dim * 4, dim),
+            nn.Dropout(0.1),
         )
 
         if self.fused_add_norm:
@@ -613,7 +615,7 @@ class Block_ISM(nn.Module):
         else:
             h_fwd = self.mixer(hidden_states, inference_params=inference_params)
             h_bwd = self.mixer_b(hidden_states.flip(1), inference_params=inference_params).flip(1)
-        hidden_states = h_fwd * h_bwd
+        hidden_states = h_fwd + h_bwd
 
         # ── 4. Pre-norm FFN (with dropout) ───────────────────────────────────
         hidden_states = hidden_states + self.ff(self.norm_ff(hidden_states))
