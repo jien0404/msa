@@ -438,7 +438,7 @@ class TextGuidedFusionBlock_v3(nn.Module):
 class Block_GLCE(nn.Module):
     def __init__(
             self, dim, mixer_cls, norm_cls=nn.LayerNorm, fused_add_norm=False, residual_in_fp32=False, drop_path=0.,
-            use_mlp=False, seq_len=50
+            use_mlp=False, seq_len=50, use_bimamba=True
     ):
         """
         Simple block wrapping a mixer class with LayerNorm/RMSNorm and residual connection"
@@ -471,7 +471,9 @@ class Block_GLCE(nn.Module):
         self.local_extractor = nn.Conv1d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim)
         self.global_extractor = nn.Linear(self.seq_len, self.seq_len)
         self.layer_norm_2 = norm_cls(dim)
-        self.mixer_b = mixer_cls(dim)  # backward Mamba for bidirectional scan
+        self.use_bimamba = use_bimamba
+        if use_bimamba:
+            self.mixer_b = mixer_cls(dim)  # backward pass for external bimamba
 
 
     def forward(
@@ -513,13 +515,20 @@ class Block_GLCE(nn.Module):
                 residual_in_fp32=self.residual_in_fp32,
                 eps=self.layer_norm_2.eps,
             )
-        if use_checkpoint:
-            h_fwd = checkpoint.checkpoint(self.mixer,   hidden_states,        inference_params)
-            h_bwd = checkpoint.checkpoint(self.mixer_b, hidden_states.flip(1), inference_params).flip(1)
+        if self.use_bimamba:
+            if use_checkpoint:
+                h_fwd = checkpoint.checkpoint(self.mixer,   hidden_states,        inference_params)
+                h_bwd = checkpoint.checkpoint(self.mixer_b, hidden_states.flip(1), inference_params).flip(1)
+            else:
+                h_fwd = self.mixer(hidden_states, inference_params=inference_params)
+                h_bwd = self.mixer_b(hidden_states.flip(1), inference_params=inference_params).flip(1)
+            hidden_states = h_fwd + h_bwd
         else:
-            h_fwd = self.mixer(hidden_states, inference_params=inference_params)
-            h_bwd = self.mixer_b(hidden_states.flip(1), inference_params=inference_params).flip(1)
-        hidden_states = h_fwd + h_bwd
+            # BiMambaVisionMixer handles bidirectionality internally
+            if use_checkpoint:
+                hidden_states = checkpoint.checkpoint(self.mixer, hidden_states, inference_params)
+            else:
+                hidden_states = self.mixer(hidden_states, inference_params=inference_params)
         if self.use_mlp:
             hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
@@ -536,13 +545,14 @@ class Block_ISM(nn.Module):
     Cấu trúc: Add→Norm→[Global + Local context]→Norm2→Mamba→FFN
       - Global branch : Linear trên chiều seq (nắm bắt global dependency)
       - Local branch  : Conv1d kernel=3 (context cục bộ)
-      - Mamba         : SSM trên full sequence
+      - Mamba         : SSM trên full sequence (bidirectional if use_bimamba=True)
       - FFN           : Pre-norm feed-forward (ISM-style)
     """
 
     def __init__(
             self, dim, mixer_cls, norm_cls=nn.LayerNorm, fused_add_norm=False,
             residual_in_fp32=False, drop_path=0., use_mlp=False, seq_len=51,
+            use_bimamba=True,
     ):
         super().__init__()
         self.residual_in_fp32 = residual_in_fp32
@@ -550,8 +560,10 @@ class Block_ISM(nn.Module):
 
         self.norm  = norm_cls(dim)
         self.norm2 = norm_cls(dim)
-        self.mixer   = mixer_cls(dim)
-        self.mixer_b = mixer_cls(dim)  # backward Mamba for bidirectional scan
+        self.mixer = mixer_cls(dim)
+        self.use_bimamba = use_bimamba
+        if use_bimamba:
+            self.mixer_b = mixer_cls(dim)  # backward pass for external bimamba
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
@@ -608,14 +620,20 @@ class Block_ISM(nn.Module):
                 residual_in_fp32=self.residual_in_fp32, eps=self.norm2.eps,
             )
 
-        # ── 3. Bidirectional Mamba SSM ────────────────────────────────────────
-        if use_checkpoint:
-            h_fwd = checkpoint.checkpoint(self.mixer,   hidden_states,        inference_params)
-            h_bwd = checkpoint.checkpoint(self.mixer_b, hidden_states.flip(1), inference_params).flip(1)
+        # ── 3. Mamba SSM (bidirectional via use_bimamba or internal BiMamba) ───
+        if self.use_bimamba:
+            if use_checkpoint:
+                h_fwd = checkpoint.checkpoint(self.mixer,   hidden_states,        inference_params)
+                h_bwd = checkpoint.checkpoint(self.mixer_b, hidden_states.flip(1), inference_params).flip(1)
+            else:
+                h_fwd = self.mixer(hidden_states, inference_params=inference_params)
+                h_bwd = self.mixer_b(hidden_states.flip(1), inference_params=inference_params).flip(1)
+            hidden_states = h_fwd + h_bwd
         else:
-            h_fwd = self.mixer(hidden_states, inference_params=inference_params)
-            h_bwd = self.mixer_b(hidden_states.flip(1), inference_params=inference_params).flip(1)
-        hidden_states = h_fwd + h_bwd
+            if use_checkpoint:
+                hidden_states = checkpoint.checkpoint(self.mixer, hidden_states, inference_params)
+            else:
+                hidden_states = self.mixer(hidden_states, inference_params=inference_params)
 
         # ── 4. Pre-norm FFN (with dropout) ───────────────────────────────────
         hidden_states = hidden_states + self.ff(self.norm_ff(hidden_states))

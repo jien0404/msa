@@ -138,6 +138,144 @@ class MambaVisionMixer(nn.Module):
         return out
 
 
+class BiMambaVisionMixer(nn.Module):
+    """Vim-style bidirectional Mamba.
+
+    Khác với dùng hai Mamba riêng biệt, BiMambaVisionMixer:
+    - Dùng MỘT in_proj duy nhất cho cả hai chiều (→ 2×d_inner)
+    - Dùng MỘT out_proj duy nhất nhận tổng hai chiều
+    - Mỗi chiều có SSM parameters riêng (A_log, D, x_proj, dt_proj, conv1d)
+
+    So sánh params với 2×MambaVisionMixer:
+    - Tiết kiệm: 1 × in_proj (d_model → d_inner) params
+    - Kiến trúc đúng với Vim/VideoMamba-style bimamba
+    """
+
+    def __init__(
+            self,
+            d_model,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+            dt_rank="auto",
+            dt_min=0.001,
+            dt_max=0.1,
+            dt_init="random",
+            dt_scale=1.0,
+            dt_init_floor=1e-4,
+            conv_bias=True,
+            bias=False,
+            layer_idx=None,
+            device=None,
+            dtype=None,
+            **kwargs,
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.d_model   = d_model
+        self.d_state   = d_state
+        self.d_conv    = d_conv
+        self.expand    = expand
+        self.d_inner   = int(self.expand * self.d_model)
+        self.dt_rank   = math.ceil(self.d_model / 16) if dt_rank == "auto" else dt_rank
+        self.layer_idx = layer_idx
+        self._dh       = self.d_inner // 2   # shorthand: SSM operates on this many channels
+
+        # Single in_proj — outputs 2×d_inner to cover both directions
+        self.in_proj  = nn.Linear(self.d_model, self.d_inner * 2, bias=bias, **factory_kwargs)
+        # Single out_proj — takes d_inner (sum of fwd+bwd after gating)
+        self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
+
+        # Per-direction SSM parameters
+        for tag in ('fwd', 'bwd'):
+            dh = self._dh
+            # depthwise conv for x branch
+            setattr(self, f'conv1d_x_{tag}', nn.Conv1d(
+                dh, dh, bias=bool(conv_bias), kernel_size=d_conv,
+                groups=dh, **factory_kwargs))
+            # depthwise conv for z (gating) branch
+            setattr(self, f'conv1d_z_{tag}', nn.Conv1d(
+                dh, dh, bias=bool(conv_bias), kernel_size=d_conv,
+                groups=dh, **factory_kwargs))
+            # input-dependent SSM parameters
+            setattr(self, f'x_proj_{tag}',
+                    nn.Linear(dh, self.dt_rank + d_state * 2, bias=False, **factory_kwargs))
+            dt_proj = nn.Linear(self.dt_rank, dh, bias=True, **factory_kwargs)
+            dt_init_std = self.dt_rank ** -0.5 * dt_scale
+            if dt_init == "random":
+                nn.init.uniform_(dt_proj.weight, -dt_init_std, dt_init_std)
+            else:
+                nn.init.constant_(dt_proj.weight, dt_init_std)
+            dt = torch.exp(
+                torch.rand(dh, **factory_kwargs) * (math.log(dt_max) - math.log(dt_min))
+                + math.log(dt_min)
+            ).clamp(min=dt_init_floor)
+            with torch.no_grad():
+                dt_proj.bias.copy_(dt + torch.log(-torch.expm1(-dt)))
+            dt_proj.bias._no_reinit = True
+            setattr(self, f'dt_proj_{tag}', dt_proj)
+            # SSM state-space matrix A
+            A = repeat(
+                torch.arange(1, d_state + 1, dtype=torch.float32, device=device),
+                "n -> d n", d=dh,
+            ).contiguous()
+            A_log = nn.Parameter(torch.log(A))
+            A_log._no_weight_decay = True
+            setattr(self, f'A_log_{tag}', A_log)
+            # skip connection D
+            D = nn.Parameter(torch.ones(dh, device=device))
+            D._no_weight_decay = True
+            setattr(self, f'D_{tag}', D)
+
+    def _scan(self, xz, tag):
+        """SSM scan for one direction.
+        xz : (B, d_inner, L)  — x and z channels interleaved
+        Returns y_gated : (B, d_inner, L)
+        """
+        dh = self._dh
+        x, z = xz[:, :dh, :], xz[:, dh:, :]
+        A = -torch.exp(getattr(self, f'A_log_{tag}').float())
+        x = F.silu(F.conv1d(x, getattr(self, f'conv1d_x_{tag}').weight,
+                            getattr(self, f'conv1d_x_{tag}').bias,
+                            padding='same', groups=dh))
+        z = F.silu(F.conv1d(z, getattr(self, f'conv1d_z_{tag}').weight,
+                            getattr(self, f'conv1d_z_{tag}').bias,
+                            padding='same', groups=dh))
+        seqlen = x.shape[-1]
+        x_dbl = getattr(self, f'x_proj_{tag}')(rearrange(x, "b d l -> (b l) d"))
+        dt, B_ssm, C = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
+        dt = rearrange(getattr(self, f'dt_proj_{tag}')(dt), "(b l) d -> b d l", l=seqlen)
+        B_ssm = rearrange(B_ssm, "(b l) s -> b s l", l=seqlen).contiguous()
+        C     = rearrange(C,     "(b l) s -> b s l", l=seqlen).contiguous()
+        y = selective_scan_fn(
+            x, dt, A, B_ssm, C,
+            getattr(self, f'D_{tag}').float(),
+            z=None,
+            delta_bias=getattr(self, f'dt_proj_{tag}').bias.float(),
+            delta_softplus=True,
+            return_last_state=None,
+        )
+        return torch.cat([y, z], dim=1)   # (B, d_inner, L)
+
+    def forward(self, hidden_states, inference_params=None):
+        """hidden_states: (B, L, D)  →  (B, L, D)"""
+        seqlen = hidden_states.shape[1]
+
+        # Single in_proj → split into forward and backward halves
+        xz_all = rearrange(self.in_proj(hidden_states), "b l d -> b d l")
+        xz_fwd, xz_bwd = xz_all.chunk(2, dim=1)   # each (B, d_inner, L)
+
+        # Forward scan
+        y_fwd = self._scan(xz_fwd, 'fwd')
+
+        # Backward scan: flip sequence → scan → flip back
+        y_bwd = self._scan(xz_bwd.flip(-1), 'bwd').flip(-1)
+
+        # Average fwd+bwd (Vim v2 convention: /2 keeps magnitude comparable to unidirectional)
+        y = rearrange((y_fwd + y_bwd) / 2, "b d l -> b l d")
+        return self.out_proj(y)
+
+
 class Attention(nn.Module):
 
     def __init__(

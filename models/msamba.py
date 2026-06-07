@@ -48,7 +48,7 @@ import copy
 
 from .mamba_block import Block_sm_v1, TextGuidedFusionBlock, TextGuidedFusionBlock_v2, TextGuidedFusionBlock_v3, Block_ISM
 from .almt_layer import HhyperLearningEncoder, CrossTransformer
-from .mixer import MambaVisionMixer
+from .mixer import MambaVisionMixer, BiMambaVisionMixer
 
 try:
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, bimamba_inner_fn, \
@@ -302,8 +302,11 @@ def create_block(
         mixer_cls = partial(Mamba2, layer_idx=layer_idx, headdim=4, **ssm_cfg, **factory_kwargs)
     elif mamba_type == "mixer":
         mixer_cls = partial(MambaVisionMixer, layer_idx=layer_idx, bimamba=bimamba, **ssm_cfg, **factory_kwargs)
+    elif mamba_type == "bimamba":
+        # Vim-style bimamba: single in_proj/out_proj, internal bidirectional scan
+        mixer_cls = partial(BiMambaVisionMixer, layer_idx=layer_idx, **ssm_cfg, **factory_kwargs)
     else:
-        raise ValueError("wrong mamba type, could only be mamba or mamba2")
+        raise ValueError("wrong mamba type, could only be mamba, mamba2, mixer, or bimamba")
     norm_cls = partial(nn.LayerNorm if not rms_norm else RMSNorm, eps=norm_epsilon)
     if block_type == 'Block':
         block = Block(
@@ -338,6 +341,7 @@ def create_block(
             fused_add_norm=fused_add_norm,
             residual_in_fp32=residual_in_fp32,
             use_mlp=use_mlp, seq_len=seq_len,
+            use_bimamba=(mamba_type != 'bimamba'),
         )
         block.layer_idx = layer_idx
     elif block_type == 'Block_ISM':
@@ -349,6 +353,7 @@ def create_block(
             fused_add_norm=fused_add_norm,
             residual_in_fp32=residual_in_fp32,
             use_mlp=use_mlp, seq_len=seq_len,
+            use_bimamba=(mamba_type != 'bimamba'),
         )
         block.layer_idx = layer_idx
     elif block_type == 'TextGuidedFusionBlock':
@@ -1181,11 +1186,14 @@ class MSAmba_ALMT(nn.Module):
         rms_norm = RMSNorm is not None
 
         def _make_ism_stack(depth, seq_len):
+            # Use 'bimamba' type for Vim-style internal bimamba (BiMambaVisionMixer)
+            # Falls back to mamba_type if passed explicitly; default is 'bimamba'
+            ism_mamba_type = mamba_type if mamba_type != 'mamba' else 'bimamba'
             return nn.ModuleList([
                 create_block(D, ssm_cfg=None, norm_epsilon=1e-5,
                              rms_norm=rms_norm, residual_in_fp32=True,
                              fused_add_norm=True, bimamba=True,
-                             layer_idx=i, mamba_type=mamba_type,
+                             layer_idx=i, mamba_type=ism_mamba_type,
                              block_type='Block_ISM', seq_len=seq_len)
                 for i in range(depth)
             ])
