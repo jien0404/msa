@@ -1208,7 +1208,7 @@ class MSAmba_ALMT(nn.Module):
         # ── ③ AHL Module ─────────────────────────────────────────────────────
         self.h_hyper      = nn.Parameter(torch.ones(1, TL, D))
         self.h_hyper_layer = HhyperLearningEncoder(
-            dim=D, depth=AHL_depth, heads=8, dim_head=16, dropout=0.)
+            dim=D, depth=AHL_depth, heads=8, dim_head=16, dropout=0.1)
 
         # ── ④ CHM Fusion ──────────────────────────────────────────────────────
         self.chm_fusion = CHMFusion(
