@@ -1367,7 +1367,7 @@ def build_model(opt):
                              fusion_depth=opt.fusion_depth, sub_loss=opt.sub_loss, use_mlp=opt.use_mlp,
                              use_con_loss=opt.use_con_loss, use_roberta=opt.use_roberta,
                              sm_block_type=opt.sm_block_type)
-    elif opt.project_name == 'MSAmba_ALMT':
+    elif opt.project_name.startswith('MSAmba_ALMT'):
         model = MSAmba_ALMT(dataset=opt.datasetName, bert_pretrained=l_pretrained,
                             sm_depth=opt.single_modality_depth,
                             mamba_type=opt.mamba_type,
