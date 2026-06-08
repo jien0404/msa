@@ -1217,6 +1217,8 @@ class MSAmba_ALMT(nn.Module):
         # ── ⑤ Heads ───────────────────────────────────────────────────────────
         # main: Concat[CLS_intra_L, CLS_cross_AL, CLS_cross_VL, CLS_central_L] → FC(4D, 1)
         self.cls_head = nn.Linear(D * 4, 1)
+        # aux 7-class head: directly optimise Acc-7 (sentiment score rounded to [-3,3])
+        self.cls7_head = nn.Linear(D * 4, 7)
         if self.sub_loss:
             # L_aux_ISM: từ cls_intra_L, cls_a, cls_v
             self.aux_head_ism = nn.Linear(D, 1)
@@ -1288,8 +1290,9 @@ class MSAmba_ALMT(nn.Module):
         # Concat 4 CLS tokens → FC(4D, 1)
         feat   = torch.cat([cls_intra_L, cls_cross_AL, cls_cross_VL, cls_central_L], dim=-1)  # (B,4D)
         output = self.cls_head(feat)                                    # (B,1)
+        cls7_logits = self.cls7_head(feat)                              # (B,7)
 
-        result = {'output': output}
+        result = {'output': output, 'cls7_logits': cls7_logits}
         if self.sub_loss:
             # L_aux_ISM: supervision trên từng modality CLS từ ISM projection
             result['sub_output_T'] = self.aux_head_ism(cls_intra_L)         # (B,1)

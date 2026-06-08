@@ -97,8 +97,8 @@ def main():
     )
 
     scheduler_warmup = get_scheduler(optimizer, opt)
-    # loss_fn = torch.nn.MSELoss()
     loss_fn = torch.nn.L1Loss()
+    cls7_loss_fn = torch.nn.CrossEntropyLoss()   # auxiliary 7-class head
     metrics = MetricsTop().getMetics(opt.datasetName)
 
     writer = SummaryWriter(logdir=log_path)
@@ -128,7 +128,7 @@ def main():
 
     for epoch in range(1, opt.n_epochs + 1):
         train(model, dataLoader['train'], optimizer, loss_fn, epoch, writer, metrics, opt.sub_loss, opt.sub_loss_lambda,
-              opt=opt)
+              opt=opt, cls7_loss_fn=cls7_loss_fn)
         val_results = evaluate(model, dataLoader['valid'], optimizer, loss_fn, epoch, writer, save_path, metrics, opt=opt)
         test_results = None
         if opt.is_test is not None:
@@ -169,7 +169,7 @@ def main():
     print("===================================================================\n")
 
 
-def train(model, train_loader, optimizer, loss_fn, epoch, writer, metrics, sub_loss=False, sub_loss_lambda=0.0, opt=None):
+def train(model, train_loader, optimizer, loss_fn, epoch, writer, metrics, sub_loss=False, sub_loss_lambda=0.0, opt=None, cls7_loss_fn=None):
     train_pbar = tqdm(enumerate(train_loader))
     losses = AverageMeter()
 
@@ -206,6 +206,11 @@ def train(model, train_loader, optimizer, loss_fn, epoch, writer, metrics, sub_l
                                                                              loss_fn(output['sub_output_T'], label) +
                                                                              loss_fn(output['sub_output_A'], label)) + \
                        opt.con_loss_lambda * con_loss_fn(output, label)
+
+        # auxiliary 7-class loss (only when model exposes cls7_logits)
+        if cls7_loss_fn is not None and 'cls7_logits' in output:
+            label7 = label.squeeze(1).round().add(3).long().clamp(0, 6)
+            loss = loss + 0.3 * cls7_loss_fn(output['cls7_logits'], label7)
 
         losses.update(loss.item(), batchsize)
 
