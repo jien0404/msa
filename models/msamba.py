@@ -1186,14 +1186,11 @@ class MSAmba_ALMT(nn.Module):
         rms_norm = RMSNorm is not None
 
         def _make_ism_stack(depth, seq_len):
-            # Use 'bimamba' type for Vim-style internal bimamba (BiMambaVisionMixer)
-            # Falls back to mamba_type if passed explicitly; default is 'bimamba'
-            ism_mamba_type = mamba_type if mamba_type != 'mamba' else 'bimamba'
             return nn.ModuleList([
                 create_block(D, ssm_cfg=None, norm_epsilon=1e-5,
                              rms_norm=rms_norm, residual_in_fp32=True,
                              fused_add_norm=True, bimamba=True,
-                             layer_idx=i, mamba_type=ism_mamba_type,
+                             layer_idx=i, mamba_type=mamba_type,
                              block_type='Block_ISM', seq_len=seq_len)
                 for i in range(depth)
             ])

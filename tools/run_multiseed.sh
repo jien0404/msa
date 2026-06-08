@@ -3,18 +3,20 @@
 # then aggregate the honest single-checkpoint test results (mean +/- std).
 #
 # Usage (run from the MSAmba/ directory):
-#   bash tools/run_multiseed.sh [PROJECT] [DATASET] [DATAPATH]
+#   bash tools/run_multiseed.sh [PROJECT] [DATASET] [DATAPATH] [extra train args...]
 # Env overrides:
 #   SEEDS="1111 2222 3333"  EPOCHS=100  PATIENCE=20  SELECT=MAE  BATCH=32  GPU=2  PYTHON=.venv/bin/python
 #
 # Example:
 #   GPU=2 BATCH=32 SEEDS="1111 2222 3333 4444 5555" \
-#     bash tools/run_multiseed.sh MSAmba_ALMT mosi /mnt/disk2/chiendx/msa/MOSI/aligned_50.pkl
+#     bash tools/run_multiseed.sh MSAmba_ALMT mosi /path/aligned_50.pkl --single_modality_depth 2
 set -euo pipefail
 
 PROJECT="${1:-MSAmba_ALMT}"
 DATASET="${2:-mosi}"
 DATAPATH="${3:-/mnt/disk2/chiendx/msa/MOSI/aligned_50.pkl}"
+shift 3 2>/dev/null || true   # extra args passed after DATAPATH
+EXTRA_ARGS=("$@")             # e.g. --single_modality_depth 2
 SEEDS="${SEEDS:-1111 2222 3333 4444 5555}"
 EPOCHS="${EPOCHS:-100}"
 PATIENCE="${PATIENCE:-20}"
@@ -43,6 +45,7 @@ for s in $SEEDS; do
     --select_metric "$SELECT" \
     --batch_size "$BATCH" \
     --CUDA_VISIBLE_DEVICES "$GPU" \
+    "${EXTRA_ARGS[@]}" \
     2>&1 | tee "$OUT/seed_${s}.log"
 done
 
