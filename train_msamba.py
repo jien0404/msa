@@ -207,10 +207,20 @@ def train(model, train_loader, optimizer, loss_fn, epoch, writer, metrics, sub_l
                                                                              loss_fn(output['sub_output_A'], label)) + \
                        opt.con_loss_lambda * con_loss_fn(output, label)
 
-        # auxiliary 7-class loss (only when model exposes cls7_logits)
-        if cls7_loss_fn is not None and 'cls7_logits' in output:
-            label7 = label.squeeze(1).round().add(3).long().clamp(0, 6)
-            loss = loss + 0.3 * cls7_loss_fn(output['cls7_logits'], label7)
+        # auxiliary ordinal loss on the cls7 head (only when it is exposed)
+        if 'cls7_logits' in output:
+            if opt is not None and getattr(opt, 'sord', 0):
+                # Phase 1 — SORD (Díaz & Marathe, CVPR 2019): soft ordinal labels
+                # p_i = softmax(-(y - level_i)^2) encode khoảng cách ordinal liên tục,
+                # train cls7 head bằng KL(log_softmax(logits) || soft). Phòng shrinkage.
+                levels = torch.arange(-3, 4, dtype=label.dtype, device=label.device).view(1, 7)
+                soft = torch.softmax(-(label - levels).pow(2), dim=-1)        # (B,7)
+                logp = torch.log_softmax(output['cls7_logits'], dim=-1)        # (B,7)
+                sord_loss = torch.nn.functional.kl_div(logp, soft, reduction='batchmean')
+                loss = loss + opt.sord_lambda * sord_loss
+            elif cls7_loss_fn is not None:
+                label7 = label.squeeze(1).round().add(3).long().clamp(0, 6)
+                loss = loss + 0.3 * cls7_loss_fn(output['cls7_logits'], label7)
 
         losses.update(loss.item(), batchsize)
 

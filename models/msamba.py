@@ -1143,12 +1143,19 @@ class MSAmba_ALMT(nn.Module):
     def __init__(self, dataset, bert_pretrained='bert-base-uncased',
                  sm_depth=2, mamba_type='mamba',
                  fusion_layer_depth=2, AHL_depth=3,
-                 sub_loss=False, sub_loss_lambda=0.5):
+                 sub_loss=False, sub_loss_lambda=0.5, sord=False):
         super().__init__()
 
         self.sub_loss        = sub_loss
         self.sub_loss_lambda = sub_loss_lambda
         self.AHL_depth       = AHL_depth
+        # Phase 1 — Soft Ordinal Regression (SORD, Díaz & Marathe CVPR 2019).
+        # When True, decode the prediction as the expectation over the 7 ordinal
+        # levels of the cls7 head, which preserves class ordering and counters
+        # the regression-shrinkage observed in error analysis.
+        self.sord = sord
+        self.register_buffer(
+            'sord_levels', torch.arange(-3, 4, dtype=torch.float).view(1, 7))
         D  = self.DIM
         TL = self.TOKEN_LEN
 
@@ -1293,6 +1300,12 @@ class MSAmba_ALMT(nn.Module):
         cls7_logits = self.cls7_head(feat)                              # (B,7)
 
         result = {'output': output, 'cls7_logits': cls7_logits}
+        if self.sord:
+            # SORD decode: prediction = E[level] = Σ_i level_i · softmax(logits)_i
+            probs = torch.softmax(cls7_logits, dim=-1)                  # (B,7)
+            sord_pred = (probs * self.sord_levels).sum(dim=-1, keepdim=True)  # (B,1)
+            result['output_reg'] = output      # keep scalar head output (aux)
+            result['output'] = sord_pred       # main prediction = ordinal expectation
         if self.sub_loss:
             # L_aux_ISM: supervision trên từng modality CLS từ ISM projection
             result['sub_output_T'] = self.aux_head_ism(cls_intra_L)         # (B,1)
@@ -1377,7 +1390,8 @@ def build_model(opt):
                             fusion_layer_depth=opt.fusion_layer_depth,
                             AHL_depth=opt.AHL_depth,
                             sub_loss=opt.sub_loss,
-                            sub_loss_lambda=opt.sub_loss_lambda)
+                            sub_loss_lambda=opt.sub_loss_lambda,
+                            sord=bool(getattr(opt, 'sord', 0)))
     else:
         raise ValueError("Wrong project name in opt.")
 

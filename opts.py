@@ -64,6 +64,16 @@ def parse_opts():
             dict(name='--sub_loss_lambda',
                  default=0.5,
                  type=float),
+            # Phase 1: Soft Ordinal Regression (SORD) head.
+            # When enabled, the main prediction is decoded as the expectation
+            # over the 7 ordinal levels {-3..+3} of the cls7 head, and the cls7
+            # head is trained with a soft-label KL loss instead of hard CE.
+            dict(name='--sord',
+                 default=0,
+                 type=int),
+            dict(name='--sord_lambda',
+                 default=1.0,
+                 type=float),
             dict(name='--use_mlp',
                  default=False,
                  type=bool),
