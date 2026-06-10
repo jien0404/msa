@@ -74,6 +74,12 @@ def parse_opts():
             dict(name='--sord_lambda',
                  default=1.0,
                  type=float),
+            # Trọng số L1 trên prediction chính khi SORD bật. Giảm < 1.0 để bớt
+            # áp lực conditional-median (nguyên nhân shrinkage), nhường chỗ cho
+            # SORD-KL định hình phân phối. 0.0 = pure ordinal.
+            dict(name='--sord_reg_lambda',
+                 default=1.0,
+                 type=float),
             dict(name='--use_mlp',
                  default=False,
                  type=bool),

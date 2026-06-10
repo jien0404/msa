@@ -190,21 +190,26 @@ def train(model, train_loader, optimizer, loss_fn, epoch, writer, metrics, sub_l
         output = model(img, audio, text)
 
 
+        # Trọng số L1 trên prediction chính. Khi SORD bật, hạ < 1.0 để bớt áp lực
+        # conditional-median (shrinkage) và nhường chỗ cho SORD-KL.
+        reg_w = opt.sord_reg_lambda if (opt is not None and getattr(opt, 'sord', 0)) else 1.0
+        main_reg = reg_w * loss_fn(output['output'], label)
+
         if not sub_loss:
-            loss = loss_fn(output['output'], label)
+            loss = main_reg
         else:
             if not opt.use_con_loss:
-                loss = loss_fn(output['output'], label) + sub_loss_lambda * (loss_fn(output['sub_output_V'], label) +
-                                                                             loss_fn(output['sub_output_T'], label) +
-                                                                             loss_fn(output['sub_output_A'], label) +
-                                                                             loss_fn(output['cls_V'], label) +
-                                                                             loss_fn(output['cls_A'], label) +
-                                                                             loss_fn(output['cls_T'], label)
-                                                                             )
+                loss = main_reg + sub_loss_lambda * (loss_fn(output['sub_output_V'], label) +
+                                                     loss_fn(output['sub_output_T'], label) +
+                                                     loss_fn(output['sub_output_A'], label) +
+                                                     loss_fn(output['cls_V'], label) +
+                                                     loss_fn(output['cls_A'], label) +
+                                                     loss_fn(output['cls_T'], label)
+                                                     )
             else:
-                loss = loss_fn(output['output'], label) + sub_loss_lambda * (loss_fn(output['sub_output_V'], label) +
-                                                                             loss_fn(output['sub_output_T'], label) +
-                                                                             loss_fn(output['sub_output_A'], label)) + \
+                loss = main_reg + sub_loss_lambda * (loss_fn(output['sub_output_V'], label) +
+                                                     loss_fn(output['sub_output_T'], label) +
+                                                     loss_fn(output['sub_output_A'], label)) + \
                        opt.con_loss_lambda * con_loss_fn(output, label)
 
         # auxiliary ordinal loss on the cls7 head (only when it is exposed)
